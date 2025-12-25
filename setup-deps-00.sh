@@ -5,14 +5,18 @@ set -e
 
 DOMAIN="nutra.tk"
 
+# Detect the real user (if running with sudo) or fall back to current user
+REAL_USER="${SUDO_USER:-$USER}"
+
+echo ">>> Starting setup for $REAL_USER on $DOMAIN..."
+
 echo ">>> Updating System..."
 sudo apt update && sudo apt upgrade -y
 sudo apt install -y curl gnupg2 ca-certificates lsb-release ubuntu-keyring git make tree ripgrep direnv htop
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-# 1. Firewall (UFW) - MISSED IN DRAFT
+# 1. Firewall (UFW)
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-# Found in history lines 337-372
 echo ">>> Configuring Firewall..."
 sudo apt install -y ufw
 sudo ufw default deny incoming
@@ -24,14 +28,12 @@ sudo ufw allow 443/udp          # Port 443 (QUIC/HTTP3)
 sudo ufw --force enable
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-# 2. Fail2Ban - MISSED IN DRAFT
+# 2. Fail2Ban
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-# Found in history lines 510-513
 echo ">>> Installing Fail2Ban..."
 sudo apt install -y fail2ban
 # Copy default config to local to avoid overwrite on update
-sudo cp /etc/fail2ban/jail.conf /etc/fail2ban/jail.local
-# TODO: You might want to script specific jail settings here using sed or cat
+sudo cp -n /etc/fail2ban/jail.conf /etc/fail2ban/jail.local || true
 sudo systemctl enable fail2ban
 sudo systemctl start fail2ban
 
@@ -42,17 +44,23 @@ echo ">>> Installing Nginx (Mainline)..."
 # Remove default ubuntu nginx if present to avoid conflicts
 sudo apt remove -y nginx nginx-common nginx-core || true
 
-curl https://nginx.org/keys/nginx_signing.key | gpg --dearmor | sudo tee /usr/share/keyrings/nginx-archive-keyring.gpg >/dev/null
+# Add official Nginx signing key
+curl -fsSL https://nginx.org/keys/nginx_signing.key | gpg --dearmor | sudo tee /usr/share/keyrings/nginx-archive-keyring.gpg >/dev/null
+
+# Verify fingerprint (optional, for log output)
 gpg --dry-run --quiet --no-keyring --import --import-options import-show /usr/share/keyrings/nginx-archive-keyring.gpg
+
+# Add Repo source
 echo "deb [signed-by=/usr/share/keyrings/nginx-archive-keyring.gpg] \
     https://nginx.org/packages/ubuntu `lsb_release -cs` nginx" | sudo tee /etc/apt/sources.list.d/nginx.list
 
 sudo apt update
 sudo apt install -y nginx
 
-# Setup web directories (History line 498)
+# Setup web directories
+echo ">>> Setting up /var/www/app permissions for $REAL_USER..."
 sudo mkdir -p /var/www/app
-sudo chown -R $USER:$USER /var/www/app
+sudo chown -R $REAL_USER:$REAL_USER /var/www/app
 
 # Enable service
 sudo systemctl enable nginx
@@ -69,11 +77,8 @@ sudo /opt/certbot/bin/pip install certbot certbot-nginx
 sudo ln -sf /opt/certbot/bin/certbot /usr/bin/certbot
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-# Cron Jobs
+# 5. Cron Jobs
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-# Setup Cron for renewal (History line 187)
-# This adds a cron job only if it doesn't already exist
-# (crontab -l 2>/dev/null; echo "0 0,12 * * * /opt/certbot/bin/certbot renew -q --post-hook 'systemctl reload nginx'") | crontab -
 echo ">>> Configuring Certbot Auto-Renewal..."
 
 # Create the cron file content directly
@@ -86,11 +91,16 @@ EOF
 sudo chmod 644 /etc/cron.d/certbot-renew
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-# 5. User & Git Config (Optional)
+# 6. User & Git Config
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-# Found in history line 302
-sudo useradd -m -s /bin/bash github
-sudo -u github mkdir -p /home/github/.ssh
+echo ">>> Setting up 'github' user..."
+if id "github" &>/dev/null; then
+    echo "User 'github' already exists."
+else
+    sudo useradd -m -s /bin/bash github
+    sudo -u github mkdir -p /home/github/.ssh
+    echo "User 'github' created."
+fi
 
 echo ">>> Done! Don't forget to:"
 echo "1. Run certbot manually once: sudo certbot --nginx -d $DOMAIN"
